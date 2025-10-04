@@ -20,3 +20,4 @@ class ScanStatsSerializer(serializers.Serializer):
     today_scans = serializers.IntegerField()
     scan_type_breakdown = serializers.DictField()
     status_breakdown = serializers.DictField()
+
