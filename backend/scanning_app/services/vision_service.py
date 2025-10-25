@@ -2,46 +2,344 @@ import requests
 import base64
 import json
 from django.conf import settings
+from datetime import datetime,timedelta
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class VisionService:
 
     def __init__(self):
-        self.api_key = getattr(settings,'IMAGGA_API_KEY','')
-        self.api_secret = getattr(settings,'IMAGGA_API_SECRET','')
-        self.base_url = "https://api.imagga.com/v2/"
+        
+        self.apis = self._initialize_apis()
+        self.cache = {}
+        self.cache_timeout = timedelta(hours=1)
 
-    def detect_object(self,image_path):
 
-        if not self.api_key or not self.api_secret:
-            return self._mock_detection()
+        
+    def _initialize_apis(self):
+
+        return [
+            {
+                'name':'Imagga',
+                'function':self._detect_with_imagga,
+                'priority':1,
+                'enabled':bool(getattr(settings,'IMAGGA_API_KEY',''))
+            },
+            {
+                'name':'GoogleVision',
+                'function':self._detect_with_google_vision,
+                'priority':2,
+                'enabled':bool(getattr(settings,'GOOGLE_VISION_API_KEY',''))
+            },
+            {
+                'name':'Clarifai',
+                'function':self._detect_with_clarifai,
+                'priority':3,
+                'enabled':bool(getattr(settings,'CLARIFAI_API_KEY',''))
+            },
+            {
+                'name':'Fallback',
+                'function':self._fallback_detection,
+                'priority':99,
+                'enabled':True
+            },
+            {
+                'name':'Gemini',
+                'function':self._detect_with_gemini,
+                'priority':4,
+                'enabled':bool(getattr(settings,'GEMINI_API_KEY','') and getattr(settings,'GEMINI_MODEL_NAME',''))
+            },
+            {
+                'name':'OpenA1',
+                'function':self._detect_with_openai,
+                'priority':5,
+                'enabled':bool(getattr(settings,'OPENA1_API_KEY','')) and bool(getattr(settings,'OPENA1_MODEL_NAME',''))
+            }
+        ]
+    
+
+    
+    def detect_objects(self,image_path):
+        
+        cache_key = f"detect_{hash(image_path)}"
+        cached_result = self._get_cached(cache_key)
+        if cached_result:
+            return cached_result
+        
+        enabled_apis = sorted(
+            [api for api in self.apis if api['enabled']],
+            key = lambda x:x['priority']
+        )
+
+        for api in enabled_apis:
+            try:
+                logger.info(f"Trying {api['name']}API....")
+                result = api['function'](image_path)
+                if result and result.get('success',False):
+                    self._set_cached(cache_key,result)
+                    return result
+            except Exception as e:
+                logger.warning(f"API {api['name']} API failed: {str(e)}")
+                continue
+        
+        return self._get_fallback_result()
+    
+
+    
+    def _detect_with_imagga(self,image_path):
+        # Implementation for Imagga API
         
         try:
-
             with open(image_path,'rb') as image_file:
-                image_data = base64.b64encode(image_file.read()).decode()
+                image_datas = base64.b64encode(image_file.read()).decode()
 
-            headers = {
-                'Authorization':f'Basic {base64.b64encode(f"{self.api_key}:{self.api_secret}".encode()).decode()}'
-            }
+                headers = {
+                    'Authorization':f'Basic{base64.b64encode(f"{settings.IMAGGA_API_KEY}:{settings.IMAGGA_API_SECRET}").encode().decode()}'   
+                }
 
-            data = {
-                'image_base64' : image_data
-            }
 
-            response = requests.post(
-                f'{self.base_url}/tags',
-                headers= headers,
-                data = data
-            )
+                response = request.post(
+                    'https://api.imagga.com/v2/tags',
+                    headers= headers,
+                    data = {'image_base64':image_datas},
+                    timeout = 10
+                )
 
-            if response.status_code == 200:
-                return self._parse_imagga_response(response.json())
-            else:
-                return self._mock_detection()
-            
+
+                if response.status_code == 200:
+                    data = response.json()
+                    objects = self._parse_imagga_response(data)
+                    return {
+                        'success':True,
+                        'objects':objects,
+                        'source':'Imagga',
+                        'api_used':'Imagga',
+                        'confidence': self._calculate_overall_confidence(objects)
+                    }
+
         except Exception as e:
-            print(f'vision API error: {e}')
-            return self._mock_detection()
+            logger.erro(f"Imagga API error:{e}")
+
+        return {'success':False}
+    
+    def _detect_with_google_vision(self,image_path):
+
+        try:
+            with open(image_path,'rb') as image_file:
+                image_content = base64.b64encode(image_file.read()).decode()
+
+                payload = {
+                    'requests':[
+                        {
+                            'image':{
+                                'content':image_content
+                            },
+                            'features':[
+                                {
+                                    'type':'LABEL_DETECTION',
+                                    'maxResults':10
+                                }
+                            ]
+                        }
+                    ]
+                }
+
+
+                response = requests.post(
+                    f'https://vision.googleapis.com/v1/images:annotate?key={settings.GOOGLE_VISION_API_KEY}',
+                    json = payload,
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    objects= self._parse_google_vision_response(data)
+                    return {
+                        'success':True,
+                        'objects':objects,
+                        'source':'Google Vision',
+                        'api_used':'Google Vision',
+                        'confidence': self._calculate_overall_confidence(objects)
+                    }
+        except Exception as e:
+            logger.error(f"Google Vision API error: {e}")
         
-    def _parse_imagga_response(self,response_data):
+        return {'success': False}
+    
+
+    def _detect_with_clarifai(self,image_path):
+
+        try:
+            with open(image_path,'rb') as image_file:
+                image_content = base64.b64encode(image_file.read()).decode()
+
+                headers = {
+                    'Authorization':f'Key {setting.CLARIFAI_API_KEY}',
+                    'Content-Type':'application/json'
+                }
+
+                data = {
+                    'inputs':[
+                        {
+                            'data':{
+                                'image':{
+                                    'base64':image_content
+                                }
+                            }
+                        }
+                    ]
+                }
+
+                response = request.post(
+                    'https://api.clarifai.com/v2/models/general-image-recognition/outputs',
+                    headers = headers,
+                    json = data,
+                    timeout = 10
+                )
+
+
+
+                if response.status_code == 200:
+                    data = response.json()
+                    objects = self._parse_clarifai_response(data)
+                    return {
+                        'success':True,
+                        'objects':objects,
+                        'source':'Clarifai',
+                        'api_used':'Clarifai',
+                        'confidence': self._calculate_overall_confidence(objects)
+                    }
+                
+        except Exception as e:
+            logger.error(f"Clarifai API error: {e}")
         
+        return {'success': False}
+
+
+    def _detect_with_gemini(self,image_path):
+
+        try:
+            with open(image_path,'rb+') as image_file:
+                image_content = base64.b64encode(image_file.read()).decode()
+
+                headers = {
+                    'Authorization':f'Bearer {settings.GEMINI_API_KEY}',
+                    'Content-Type':'application/json'
+                }  
+
+                data = {
+                    'model':settings.GEMINI_MODEL_NAME,
+                    'inputs':{
+                        'image':{
+                            'base64':image_content
+                        }
+                    }
+                }
+
+                response = request.post(
+                    'https://api.gemini.com/v1/models/detect',
+                    headers = headers,
+                    json = data,
+                    timeout = 10
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    objects = self._parse_gemini_response(data)
+                    return {
+                        'success':True,
+                        'objects':objects,
+                        'source':'Gemini',
+                        'api_used':'Gemini',
+                        'confidence': self._calculate_overall_confidence(objects)
+                    }
+                
+        except Exception as e:
+            logger.error(f"Gemini API error: {e}")
+        
+        return {'success': False}
+
+
+    def _detect_with_openai(self,image_path):
+
+        try:
+            with open(image_path,'rb') as image_file:
+                image_content = base64.b64encode(image_file.read()).decode()
+
+                headers = {
+                    'Authorization': f'Bearer {settings.OPENA1_API_KEY}',
+                    'Content-Type':'application/json'
+                }
+
+                data = {
+                    'inputs':{
+                        'image':{
+                            'base64':image_content
+                        }
+                    }
+                }
+
+                response = requests.post(
+                    'https://api.openai.com/v1/models/detect',
+                    headers = headers,
+                    json = data,
+                    timeout = 10
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    objects = self._parse_openai_response(data)
+                    return {
+                        'success':True,
+                        'objects':objects,
+                        'source':'OpenAI',
+                        'api_used':'OpenAI',
+                        'confidence':self._calculate_overall_confidence(objects)
+                    }
+                
+        except Exception as e:
+            logger.error(f"OpenAI API error: {e}")
+
+        return {'success': False}
+
+
+    def _parse_imagga_response(self,data):
+
+        objects = []
+        if 'result' in data and 'tags' in data['result']:
+            for tag in data['result']['tags']:
+                if tag['confidence'] > 20:
+                    objects.append({
+                        'name': tag['tag']['en'],                            
+                        'confidence': tag['confidence'],
+                        'category': self._dynamic_categorize(tag['tag']['en']),
+                        'api_source':'Imagga'
+                        })
+        return objects[:8]
+    
+
+    def _parse_google_vision_response(self,data):
+
+        objects = []
+        if 'responses' in data and data['responses']:
+            for label in data['responses'][0].get('labelAnnotations',[]):
+                objects.append({
+                    'name':label['description'],
+                    'confidence':label['score']*100,
+                    'category':self._dynamic_categorize(label['description']),
+                    'api_source':'Google Vision'
+                })
+        return objects[:8]
+    
+
+    def _parse_clarifai_response(self,data):
+
+        objects = []
+        if 'outputs' in data and data['outputs']:
+            for concept in data['outputs'][0]['data']['concepts']:
+                objects.append({
+                    'name':concept['name'],
+
+                })
