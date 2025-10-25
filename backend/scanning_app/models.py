@@ -10,7 +10,8 @@ class ScannedItem(models.Model):
         ('qr','QR Code'),
         ('text','Text'),
         ('image','Image'),
-        ('document','Document')
+        ('document','Document'),
+         ('object', 'Object Recognition')
     ] 
 
     STATUS_CHOICES = [
@@ -26,6 +27,9 @@ class ScannedItem(models.Model):
     status = models.CharField(max_length=20,choices=STATUS_CHOICES,default='pending')
     metadata = models.JSONField(blank=True,default=dict,help_text="Additional scan information")
     image = models.ImageField(upload_to='scans/',blank = True,null=True)
+    product_info = models.ForeignKey('ProductInfo',on_delete=models.SET_NULL,null=True,blank=True)
+    is_object_detected = models.BooleanField(default=False)
+    object_labels = models.JSONField(default=list,blank=True)
     
 
     class Meta:
