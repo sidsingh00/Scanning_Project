@@ -341,5 +341,77 @@ class VisionService:
             for concept in data['outputs'][0]['data']['concepts']:
                 objects.append({
                     'name':concept['name'],
-
+                    'confidence':concept['score']*100,
+                    'category':self._dynamic_categorize(concept['name']),
+                    'api_source':'Clarifai'
                 })
+        return objects[:8]
+    
+    def _parse_gemini_response(self,data):
+
+        objects = []
+        if 'predictions' in data and data['predictions']:
+            for item in data['predictions']:
+                if item['confidence'] > 20:
+                    objects.append({
+                        'name':item['label'],
+                        'confidence':item['confidence'],
+                        'category':self._dynamic_categorize(item['label']),
+                        'api_source':'Gemini'
+                    })
+        return objects[:8]
+    
+    def _parse_openai_response(self,data):
+
+        objects = []
+        if 'predictions' in data and data['predictions']:
+            for item in data['predictions']:
+                if item['confidence']>20:
+                    objects.append({
+                        'name':item['label'],
+                        'confidence':item['confidence'],
+                        'category':self._dynamic_categorize(item['label']),
+                        'api_source':'OpenAI'
+                    })
+        return objects[:8]
+
+
+    def _dynamic_categorize(self,label):
+
+        api_category = self._get_category_from_api(object_name)
+        if api_category:
+            return api_category
+    
+        return self._local_categorization(object_name)
+    
+    def _get_category_from_api(self,label):
+
+        try:
+            response = requests.get(
+                f"https://api.datamuse.com/words?sp={object_name}&md=d&max=1",
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and 'defs' in data[0]:
+                    definition = data[0]['defs'][0]
+                    return self._extract_category_from_definition(definition)
+        except Exception as e:
+            logger.error(f"Error fetching category from API: {e}")
+        return None
+    
+
+    def _extract_category_from_definition(self,definition):
+
+        definition = definition.lower()
+        category_keywords = {
+            'food': ['food', 'fruit', 'vegetable', 'nutrient', 'edible'],
+            'animal': ['animal', 'mammal', 'bird', 'insect', 'species'],
+            'tool': ['tool', 'instrument', 'device', 'implement'],
+            'vehicle': ['vehicle', 'car', 'transport', 'machine'],
+            'clothing': ['clothing', 'garment', 'wear', 'apparel'],
+            'furniture': ['furniture', 'furnishing', 'seat', 'table'],
+            'electronics': ['electronic', 'device', 'computer', 'digital'],
+            'nature': ['plant', 'tree', 'flower', 'landscape', 'natural']
+        }
