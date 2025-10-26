@@ -378,17 +378,18 @@ class VisionService:
 
     def _dynamic_categorize(self,label):
 
-        api_category = self._get_category_from_api(object_name)
+        api_category = self._get_category_from_api(label)
         if api_category:
             return api_category
     
-        return self._local_categorization(object_name)
+        return self._local_categorization(label)
+    
     
     def _get_category_from_api(self,label):
 
         try:
             response = requests.get(
-                f"https://api.datamuse.com/words?sp={object_name}&md=d&max=1",
+                f"https://api.datamuse.com/words?sp={label}&md=d&max=1",
                 timeout=5
             )
             
@@ -401,6 +402,7 @@ class VisionService:
             logger.error(f"Error fetching category from API: {e}")
         return None
     
+
 
     def _extract_category_from_definition(self,definition):
 
@@ -415,3 +417,87 @@ class VisionService:
             'electronics': ['electronic', 'device', 'computer', 'digital'],
             'nature': ['plant', 'tree', 'flower', 'landscape', 'natural']
         }
+
+        for category,keywords in category_keywords.items():
+            if any(keywords in definition for keyword in keywords):
+                return category
+        return 'other'
+    
+
+    def _local_categorization(self,label):
+
+        object_name = object_name.lower()
+        categories = {
+            'food': ['apple','banana','pizza','burger','food','fruit'],
+            'electronics':['phone','laptop','computer','camera','tv','electronics'],
+            'clothing':['shirt','pants','dress','clothing','shoe'],
+            'furniture':['chair','table','sofa','bed','furniture'],
+            'clothing':['car','bike','bus','vehicle','truck'],
+            'sports':['ball','racket','sports','game'],
+            'animal':['dog','cat','bird','animal','fish'],
+            'tool':['hammer','screwdriver','tool','wrench'],
+            'nature':['tree','flower','plant','nature','grass']
+        }
+
+
+        for category,keywords in categories.items():
+            if any(keyword in object_name for keyword in keywords):
+                return category
+        return 'other'
+    
+
+    def get_product_details(self,object_name):
+
+        cache_key = f"product_{object_name.lower()}"
+        cached_result = self._get_cached(cache_key)
+
+        if cached_result:
+            return cached_result
+        
+        apis_to_try = [
+            self._get_from_wikipedia,
+            self._get_from_open_food_facts,
+            self._get_from_walmart_api,
+            self._get_from_amazon_api,
+            self._generate_dynamic_fallback
+        ]
+
+
+        for api_func in apis_to_try:
+            try:
+                result = api_func(object_name)
+                if result and result.get('success',False):
+                    self._set_cached(cache_key,result)
+                    return result
+            except Exception as e:
+                logger.warning(f"Product detail API {api_func.__name__} failed: {str(e)}")
+                continue
+    
+        return self._generate_dynamic_fallback(object_name)
+    
+
+    def _get_from_wikipedia(self,object_name):
+
+        try:
+            response = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{object_name.replace(' ','_')}",
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'success':True,
+                    'name':object_name,
+                    'description':data.get('extract',''),
+                    'category': self._dynamic_categorize(object_name),
+                    'source':'Wikipedia',
+                    'image_url':data.get('thumbnail',{}).get('source',''),
+                    'detailed_info':self._parse_wikipedia_details(data),
+                    'api_used':'Wikipedia'
+                }
+        except Exception as e:
+            logger.error(f"Wikipedia API error: {e}")
+        
+        return {'success':False}
+     
