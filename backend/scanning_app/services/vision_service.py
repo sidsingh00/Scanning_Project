@@ -501,3 +501,158 @@ class VisionService:
         
         return {'success':False}
      
+    def _get_from_open_food_facts(self,object_name):
+
+        if self._dynamic_categorize(object_name) != 'food':
+            return {'success':False}
+        
+        try:
+            response = requests.get(
+                f"https://world.openfoodfacts.org/api/v0/product/{object_name}.json",
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('product'):
+                    return {
+                        'success':True,
+                        'name':object_name,
+                        'description':data['product'].get('generic_name',''),
+                        'category':'food',
+                        'source':'Open Food Facts',
+                        'detailed_info':self._parse_food_facts_details(data['product']),
+                        'api_used':'Open Food Facts'
+                    }
+        except Exception as e:
+            logger.error(f"Open Food Facts API error: {e}")
+        
+        return {'success': False}
+    
+
+
+    def _get_from_walmart_api(self,object_name):
+        try:
+            if hasattr(setting,'WALMART_API_KEY'):
+                response = requests.get(
+                    f"http://api.walmartlabs.com/v1/search?query={object_name}&format=json&apiKey={settings.WALMART_API_KEY}",
+                    timeout=8
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get('items'):
+                        item = data['items'][0]
+                        return {
+                            'success': True,
+                            'name': item.get('name', object_name),
+                            'description': item.get('shortDescription', ''),
+                            'category': item.get('categoryPath', ''),
+                            'source': 'Walmart',
+                            'price': item.get('salePrice'),
+                            'api_used': 'Walmart'
+                        }
+        except Exception as e:
+            logger.error(f"Walmart API error: {e}")
+        
+        return {'success': False}
+    
+
+
+    def _parse_wikipedia_details(self,data):
+        
+        return {
+            'summary':data.get('extract','')[:300]+'...' if len(data.get('extract',''))>300 else data.get('extract',''),
+            'page_url' : data.get('content_urls',{}).get('desktop',{}).get('page',''),
+            'title': data.get('title',''),
+            'type': data.get('type','')
+        }
+    
+
+    def _parse_food_facts_details(self,product_data):
+
+        return {
+            'brands': product_data.get('brands',''),
+            'ingredients': product_data.get('ingredients_text',''),
+            'nutriments': product_data.get('nutriments',{}),
+            'product_url': product_data.get('url',''),
+           'allergens': product_data.get('allergens', '')
+        }
+    
+    def _generate_dynamic_fallback(self,object_name):
+
+        category = self._dynamic_categorize(object_name)
+
+        context = self._get_object_context(object_name,category)
+
+        return {
+            'success':True,
+            'name':object_name,
+            'description':f"{object_name} is a {category} item. {context}",
+            'category':category,
+            'source':'Dynamic Fallback',
+            'detailed_info':{
+                'context':context
+            },
+            'api_used':'Dynamic Fallback'
+        }
+
+
+    def _get_object_context(self,object_name,category):
+
+        try:
+            response = requests.get(
+                f"https://api.datamuse.com/words?rel_jja={object_name}&max=3",
+                timeout=5
+            )
+
+
+            related_words = []
+            if response.status_code ==200:
+                related_words = [item['word'] for item in response.json()]
+
+                return {
+                    'description': f"{object_name.title()} - commonly associated with {','.join(related_words)}",
+                    'related_words': related_words
+                }
+            
+        except Exception:
+            return {}    
+        
+
+    def _generate_smart_details(self,object_name,category,context):
+
+        base_info = {
+            'type':self._infer_object_type(category),
+            'common_uses': self._get_dynamic_uses(object_name,category),
+            "material": self._infer_material(object_name,category),
+            "fun_fact":self._get_dynamic_fun_fact(object_name)
+        }
+
+        category_details = {
+            'food': {
+                'storage': 'Refrigerate if perishable',
+                'shelf_life': 'Varies by type',
+                'nutrition': 'Contains essential nutrients'
+            },
+            'electronics': {
+                'power_source': 'Battery or electricity',
+                'lifespan': '2-5 years typically',
+                'maintenance': 'Keep clean and dry'
+            },
+            'furniture': {
+                'material': 'Wood, metal, or composite',
+                'lifespan': '5-15 years',
+                'maintenance': 'Regular cleaning'
+            }
+        }
+
+        base_info.update(category_details.get(category,{}))
+        return base_info
+    
+
+    def _infer_object_type(self,category):
+
+        type_map ={
+            
+        }
