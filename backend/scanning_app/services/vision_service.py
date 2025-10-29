@@ -654,5 +654,52 @@ class VisionService:
     def _infer_object_type(self,category):
 
         type_map ={
-            
+            'food': 'Consumable Item',
+            'electronics': 'Electronic Device',
+            'furniture': 'Wood or composite',
+            'clothing': 'Fabric or textile',
+            'vehicle': 'Metal and plastic'            
         }
+
+        return material_map.get(category,'Various materials')
+
+
+    def _get_dynamic_uses(self,object_name):
+
+        try:
+            response = requests.get(
+                 f"http://numbersapi.com/random/trivia?json",
+                 timeout=5
+            )
+
+            if(response):
+                data = response.json()
+                return data.get('text',f"Interesting fact about {object_name}!")
+        except Exception:
+            pass
+
+        return f"Did you know? {object_name.title()} has a fascinating history!"
+    
+
+    def _calculate_overall_confidence(self,object):
+
+        if not object:
+            return 0
+        
+        confidence = [obj['confidence'] for obj in object]
+        return sum(confidence)/len(confidence)
+    
+
+    def _get_cached(self,key):
+
+        if key in self.cache:
+            cached_time,result = self.cache[key]
+            if datetime.now() - cached_time < self.cache_timeout:
+                return result
+            else:
+                del self.cache[key]
+
+        return None
+    
+    def _set_cached(set,key,result):
+        self.cache[key] = (datetime.now(),result)
