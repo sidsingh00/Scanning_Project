@@ -47,7 +47,6 @@ class ScanService:
                 'success': False,
                 'error': 'User profile not found'
             }
-        
     
     @staticmethod
     def get_user_static(user):
