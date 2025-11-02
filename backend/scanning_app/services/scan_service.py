@@ -2,65 +2,131 @@ from django.contrib.auth.models import User
 from ..models import UserProfile,ScannedItem
 from django.utils import timezone
 
-class ScanService:
+logger = loggin.getLogger(__name__)
 
-    @staticmethod
-    def can_user_scan(user):
-        try:
-            profile = UserProfile.objects.get(user = user)
-            return profile.can_scan()
-        except UserProfile.DoesNotExist:
-            return False
-        
-    @staticmethod
-    def get_remaining_scans(user):
+class DynamicScanService:
+
+    def __ini__(self):
+        self.vission_service = DynamicVisionService()
+        self.scan_limit = _load_dynamic_limit()
+
+    def _load_dynamic_limit(self):
+
+        return {
+            'free_scan': 5,
+            'premium_scans':'unlimited',
+            'scan_timeout':timeout(minutes=1)
+        }
+
+
+    def can_user_scan(self,user):
+
         try:
             profile = UserProfile.objects.get(user=user)
-            return profile.get_remaining_scans()
+
+            if hasattr(user, 'usersubscription'):
+                active_subs = user.usersubscription_set.filter(
+                    is_active=True,
+                    start_date_lte= timezone.now(),
+                    end_date_gt = timezone.now()
+                )
+                if active_subs.exists():
+                    return True
+            
+            return profile.free_scans_used< profile.max_free_scans
+        
+        except UserProfile.DoesNotExist:
+            return False
+    
+
+    def get_remaining_scans(self,user):
+
+        try:
+            profile = UserProfile.objects.get(user=user)
+
+            if DynamicScanService._is_user_premium(user):
+                return 'unlimited'
+            
+            return max(0,profile.max_free_scans - profile.free_scans_used)
+        
         except UserProfile.DoesNotExist:
             return 0
         
-    @staticmethod
-    def create_scan(user, scan_data, scan_type, metadata = None):
-        try:
-            profile = UserProfile.objects.get(user=user)
+    def _is_user_premium(self,user):
 
-            if not profile.can_scan():
+        profile = UserProfile.objects.get(user=user)
+
+        try:
+            from ..models import UserSubscription
+            return UserSubscription.objects.filter(
+                user = user,
+                is_active = True,
+                end_date_gt = timezone.now()
+            ).exists()
+        
+        except Exception:
+            return False
+    
+    def create_scan(self,user,scan_data,scan_type,metadata=None,image=None):
+
+        try:
+            profile = UserProfile.objects.get(user = user)
+
+            if not self.can_user_scan(user):
                 return {
-                    'success': False,
-                    'error': 'Scan limit reached. Please upgrade to premium.',
-                    'remaining_scans': profile.get_remaining_scans()
+                    'success':False,
+                    'error':'Scan limit reached. Please upgrade to premium.',
+                    'remaining_scans': self.get_remaining_scans,
+                    'upgrade_url':self._get_upgrade_url(user)
                 }
             
-            scan = ScannedItem.objects.create(user=user,scan_data=scan_data,scan_type=scan_type,metadata=metadata or {})
+            scan_result = self._process_scan_dynamically(
+                user,scan_data,scan_type,metadata,image
+            )
 
-            profile.increment_scan_count()
+            if scan_result['success']:
+                self._update_user_stats(profile,scan_type)
 
-            return{
-                'success':True,
-                'scan':scan,
-                'remaining_scan':profile.get_remaining_scans()
-            }
+                return {
+                    'success': True,
+                    'scan':scan_result['scan'],
+                    'remaining_scans':self.get_remaining_scans(user),
+                    'detected_obkects':scan_result.get('detected_objects',[]),
+                    'processing_time':scan_result.get('processing_time',0),
+                    'api_used':scan_result.get('api_used','local')
+                }
+            else:
+                return {
+                    'success':False,
+                    'error':scan_result.get('error','Unknown error occurred during scan.'),
+                    'remaining_scans':self.get_remaining_scans(user)
+                }
         
         except UserProfile.DoesNotExist:
-            return{
-                'success': False,
-                'error': 'User profile not found'
+            return {
+                'success':False,
+                'error':'User profile not found'
             }
-    
-    @staticmethod
-    def get_user_static(user):
-        try:
-            profile = UserProfile.objects.get(user=user)
-            total_scans = ScannedItem.objects.filter(user=user).count()
+        
+    def _process_scan_dynamically(self,user,scan_data,scan_type,metadata,image):
 
-            return{
-                'total_scans': total_scans,
-                'free_scans_used': profile.free_scans_used,
-                'max_free_scans': profile.max_free_scans,
-                'remaining_scans': profile.get_remaining_scans(),
-                'is_premium': profile.is_premium,
-                'premium_expiry': profile.premium_expiry
+        start_time = timezone.now()
+
+        try:
+            if scan_type == 'image' and image:
+                return self._process_image_scan(user,scan_data,image,metadata)
+            elif scan_type in ['barcode','qr']:
+                return self._process_code_scan(user,scan_data,image,metadata)
+            else:
+                return self._process_text_scan(user,scan_data,scan_type,metadata)
+            
+        except Exception as e:
+            logger.error(f"Scan processing error:{e}")
+            return {
+                'success':False,
+                'error': f'Processing failed: {str(e)}'
             }
-        except UserProfile.DoesNotExist:
-            return None
+        
+        finally:
+            process_time = (timezone.now() - start_time).total_seconds()
+            logger.info(f"Scan processing took{process_time:.2f} seconds")
