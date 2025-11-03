@@ -1,6 +1,8 @@
 from django.contrib.auth.models import User
 from ..models import UserProfile,ScannedItem
 from django.utils import timezone
+import tempfile
+from django.core.files.storage import FileSystemStorage
 
 logger = loggin.getLogger(__name__)
 
@@ -130,3 +132,85 @@ class DynamicScanService:
         finally:
             process_time = (timezone.now() - start_time).total_seconds()
             logger.info(f"Scan processing took{process_time:.2f} seconds")
+
+    def _process_image_scan(self,user,scan_data,image,metadata):
+        
+        try:
+            fs = FileSystemStorage(location = tempfile.gettempdir())
+
+            filename = fs.save(image.name,image)
+            temp_image_path = fs.path(filename)
+
+            detection_result = self.vision_service.detect_objects(temp_image_path)
+
+            scan = ScannedItem.objects.create(
+                user = user,
+                scan_type = 'image',
+                scan_data = scan_data,
+                metadata = {
+                    **metadata,
+                    'detection_result':detection_result,
+                    'original_image_name':image.name
+                },
+                image= image
+            )
+
+            detected_objects = []
+
+            if detection_result.get('success'):
+                detected_objects = detection_result.get('objects',[])
+                scan.object_labels = detected_objects
+                scan.is_object_detected = len(detected_objects)>0
+
+                if detected_objects:
+                    main_object = detected_objects[0]
+                    product_info = self._create_dynamic_product_info(main_object)
+                    scan.product_info = product_info
+                
+            scan.save()
+
+            fs.delete(filename)
+
+            return {
+                'success':True,
+                'scan':scan,
+                'detected_objects':detected_objects,
+                'api_used':detection_result.get('api_used','unknown')
+            }
+
+        except Exception as e:
+            logger.error(f"Image scan processing error: {e}")
+            return {
+                'success': False,
+                'error': f'Image processing failed: {str(e)}'
+            }
+        
+    def _process_code_scan(self,user,scan_data,scan_type,metatdata):
+
+        try:
+            product_info = self._lookup_product_info(scan_data,scan_type)
+
+            scan = ScannedItem.objects.create(
+                user = user,
+                scan_type = scan_type,
+                scan_data = scan_data,
+                metadata = {
+                    **metadata,
+                    'lookup_result':product_info,
+                    'code_type': scan_type
+                }
+            )
+
+            return {
+                'success':True,
+                'scan':scan,
+                'product_info': product_info
+            }
+        
+        except Exception as e:
+            logger.error(f"Code scan processing error: {e}")
+            return {
+                'success': False,
+                'error': f'Code processing failed: {str(e)}'
+            }
+    
