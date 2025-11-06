@@ -1,5 +1,5 @@
 from django.contrib.auth.models import User
-from ..models import UserProfile,ScannedItem
+from ..models import UserProfile,ScannedItem,ProductInfo
 from django.utils import timezone
 import tempfile
 from django.core.files.storage import FileSystemStorage
@@ -9,7 +9,7 @@ logger = loggin.getLogger(__name__)
 class DynamicScanService:
 
     def __ini__(self):
-        self.vission_service = DynamicVisionService()
+        self.vision_service = DynamicVisionService()
         self.scan_limit = _load_dynamic_limit()
 
     def _load_dynamic_limit(self):
@@ -213,4 +213,110 @@ class DynamicScanService:
                 'success': False,
                 'error': f'Code processing failed: {str(e)}'
             }
+    
+    def _process_text_scan(self,user,scan_data,scan_type,metadata):
+
+        try:
+            text_analysis = self._analyze_text_dynamically(scan_data)
+            
+            scan = ScannedItem.objects.create(
+                user = user,
+                scan_data = scan_data,
+                scan_type = scan_type,
+                metadata = {
+                    **metadata,
+                    'text_analysis': text_analysis,
+                    'word_count':len(scan_data.split()),
+                    'content_type': text_analysis.get('content_type','unknown')
+                }
+            )
+
+            return {
+                'success': True,
+                'scan':scan,
+                'text_analysis':text_analysis
+            }
+        except Exception as e:
+            logger.error(f"Text scan processing error: {e}")
+            return {
+                'success': False,
+                'error': f'Text processing failed: {str(e)}'
+            }
+        
+    def _lookup_code_dynamically(self,code_data,code_type):
+
+        return {
+            'type':code_type,
+            'data':code_data,
+            'lookup_source': 'internal',
+            'timestamp': timezone.now().isoformat()
+        }
+    
+    def _analyze_text_dynamically(self,text_data):
+
+        word_count = len(text_data.split())
+        char_count = len(text_data)
+
+        return {
+            'word_count': word_count,
+            'char_count': char_count,
+            'content_type':self._classify_content_type(text_data),
+            'language': 'en',
+            'readability_score':self._calculate_readability(text_data)
+        }
+    
+    def _classify_content_type(self,text):
+
+        text_lower = text.lower()
+
+        if any(word in text_lower for word in ['price','cost','$','rs']):
+            return 'price_information'
+        elif any(word in text_lower for word in ['http','www','.com']):
+            return 'url'
+        elif len(text)<50:
+            return 'short_text'
+        else:
+            return 'general_text'
+        
+    def _calculate_readability(self,text):
+        word = text.split()
+        if not word:
+            return 0
+        
+        avg_word_length = sum(len(word) for word in words)/len(words)
+        return min(100,max(0,100-(avg_word_length*5)))
+    
+
+    def _create_dynamic_product_info(self,object_data):
+
+        product_details = self.vision_service.get_product_details(object_data['name'])
+
+        product_info = productInfo.objects.create(
+            name = object_data['name'],
+            category = object_data.get('category','other'),
+            description = product_details.get('description',''),
+            metadata = {
+                'common_uses':product_details.get('detailed_info',{}).get('common_uses',[]),
+                'fun_fact':product_details.get('detailed_info',{}).get('fun_fact',''),
+                'detection_confidence':object_data.get('confidence',0.0),
+                'api_source':product_details.get('api_used','unknown'),
+                'source_api':object_data.get('api_source','unknown')
+            }
+        )
+
+        return product_info
+    
+    def _update_user_stats(self,profile,scan_type):
+
+        profile.scan_count+=1
+
+        if not self._is_user_premium(profile.user):
+            profile.free_scan_used +=1
+
+        scan_stats = profile.metadat.get('scan_statistics',{})
+        scan_stats[scan_type] = scan_stats
+
+        profile.save()
+
+    
     
