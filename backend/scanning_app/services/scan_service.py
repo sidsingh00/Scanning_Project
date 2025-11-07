@@ -318,5 +318,36 @@ class DynamicScanService:
 
         profile.save()
 
+    def _get_upgrade_url(self,user):
+
+        from django.urls import reverse
+        return reverse('subscription-plans')
     
-    
+    @staticmethod
+    def get_user_stats(user):
+        try:
+            profile = UserProfile.objects.get(user = user)
+            total_scans = ScannedItem.objects.filter(user=user).count()
+            object_scans = ScannedItem.objects.filter(user=user,is_object_detected = True).count()
+
+            scan_statistics = profile.metadata.get('scan_statistics',{})
+            recent_activity = ScannedItem.objects.filter(
+                user = user,
+                timestamp__gte = timezone.now() - timedelta(days = 7)
+            ).count()
+
+            return {
+                'total_scans': total_scans,
+                'object_scans': object_scans,
+                'free_scans_used': profile.free_scans_used,
+                'max_free_scans': profile.max_free_scans,
+                'remaining_scans': DynamicScanService.get_remaining_scans(user),
+                'is_premium': DynamicScanService._is_user_premium(user),
+                'premium_expiry': getattr(profile, 'premium_expiry', None),
+                'scan_statistics': scan_statistics,
+                'recent_activity': recent_activity,
+                'scan_efficiency': round((object_scans / total_scans * 100) if total_scans > 0 else 0, 2)
+            }
+        except UserProfile.DoesNotExist:
+            return None
+        
