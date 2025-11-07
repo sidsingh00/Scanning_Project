@@ -1,10 +1,13 @@
 from django.contrib.auth.models import User
-from ..models import UserProfile,ScannedItem,ProductInfo
+from ..models import UserProfile, ScannedItem, ProductInfo
+from .vision_service import DynamicVisionService
 from django.utils import timezone
-import tempfile
-from django.core.files.storage import FileSystemStorage
+import os
+from django.conf import settings
+import logging
+from datetime import timedelta
 
-logger = loggin.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 class DynamicScanService:
 
